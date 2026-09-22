@@ -27,7 +27,7 @@ class PatternConfig:
     max_final_contraction_age_bars: int = 20
     max_pivot_distance_from_final_low: float = 0.20
     max_breakout_extension: float = 0.10
-    breakout_transition_lookback_days: int = 5
+    breakout_transition_lookback_days: int = 1
     pivot_lookback_days: int = 30
     volume_ma_days: int = 50
     max_volume_step: float = 1.10
