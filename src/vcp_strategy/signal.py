@@ -63,14 +63,11 @@ class VCPDetector:
         if row.Close <= pivot:
             return None
 
-        # A VCP breakout should be an actual transition from below/at
-        # resistance to above resistance. This prevents the same breakout
-        # from generating a new signal on every strong-volume follow-through
-        # day, which otherwise inflated the signal count without creating
-        # independent setups.
-        previous_pivot = self._pivot_before(df, i - 1)
+        # A breakout is a transition from at/below the current resistance
+        # to above it. Compare the previous close with the SAME pivot used
+        # for today's breakout, rather than recomputing yesterday's pivot.
         previous_close = float(df.iloc[i - 1].Close)
-        if np.isfinite(previous_pivot) and previous_close >= previous_pivot:
+        if previous_close >= pivot:
             return None
 
         return VCPSignal(
