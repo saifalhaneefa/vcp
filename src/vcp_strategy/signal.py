@@ -222,9 +222,19 @@ class VCPDetector:
         if close <= pivot:
             return None
 
-        lookback = self.cfg.vcp.breakout_transition_lookback_days
-        prior = df.iloc[max(0, i - lookback):i]["Close"]
-        if not prior.empty and float(prior.max()) > pivot:
+        # A VCP breakout is a lifecycle event: the current close must be the
+        # first close above this pivot after the final recovery high established
+        # the pivot. This prevents repeated signals when price crosses the same
+        # pivot multiple times after an initial breakout.
+        setup = self._setup(df, i)
+        final = contractions[-1]
+        if final.recovery_high_idx is None:
+            return None
+        pivot_setup_idx = final.recovery_high_idx
+        pivot_abs_idx = setup.index[pivot_setup_idx]
+        pivot_pos = df.index.get_loc(pivot_abs_idx)
+        prior_since_pivot = df.iloc[pivot_pos + 1:i]["Close"]
+        if not prior_since_pivot.empty and float(prior_since_pivot.max()) > pivot:
             return None
 
         extension = close / pivot - 1.0
