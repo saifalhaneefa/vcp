@@ -76,7 +76,7 @@ def main() -> None:
             vcp=replace(base.vcp, breakout_volume_multiple=threshold),
         )
         bt = PortfolioBacktester(cfg, starting_capital=args.capital)
-        result = bt.run(data, start=args.start, end=args.end)
+        result = bt.run(data, start=args.start, end=args.end, show_progress=False)
         metrics = bt.metrics(result, starting_capital=args.capital)
         rows.append(
             {
