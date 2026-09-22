@@ -68,6 +68,11 @@ def main() -> None:
     parser.add_argument("--start", default="2015-01-01")
     parser.add_argument("--end", default="2025-12-31")
     parser.add_argument("--capital", type=float, default=1_000_000.0)
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable live progress output.",
+    )
     args = parser.parse_args()
 
     if not args.data_dir.exists():
@@ -82,7 +87,13 @@ def main() -> None:
 
     config = load_config(args.config)
     backtester = PortfolioBacktester(config, starting_capital=args.capital)
-    result = backtester.run(data, start=args.start, end=args.end)
+    print("Starting backtest...")
+    result = backtester.run(
+        data,
+        start=args.start,
+        end=args.end,
+        show_progress=not args.no_progress,
+    )
     metrics = backtester.metrics(result, starting_capital=args.capital)
 
     print("=" * 60)
