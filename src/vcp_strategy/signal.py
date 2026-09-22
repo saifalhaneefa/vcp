@@ -37,24 +37,23 @@ class VCPDetector:
             and close >= row.High52W * (1 - self.cfg.trend.max_distance_from_52w_high)
         )
 
-    def _pivot_before(self, df, i):
+    def _setup(self, df, i):
         start = max(0, i - self.cfg.vcp.max_contraction_lookback_days)
-        pstart = max(start, i - self.cfg.vcp.pivot_lookback_days)
-        if pstart >= i:
-            return np.nan
-        return float(df.iloc[pstart:i].High.max())
+        return df.iloc[start:i]
 
     def find_signal(self, df, i):
         if i <= 0 or i >= len(df) - 1 or not self.trend_ok(df.iloc[i]):
             return None
 
-        start = max(0, i - self.cfg.vcp.max_contraction_lookback_days)
-        setup = df.iloc[start:i]
+        setup = self._setup(df, i)
         cs = self.find_contractions(setup)
         if not self.valid(cs):
             return None
 
-        pivot = self._pivot_before(df, i)
+        # In a VCP, the pivot is tied to the top of the final contraction,
+        # rather than a rolling high that moves upward with the breakout.
+        pivot = float(cs[-1].high)
+
         row = df.iloc[i]
         ratio = float(row.Volume / row.VolumeMA) if row.VolumeMA > 0 else np.nan
 
@@ -63,11 +62,10 @@ class VCPDetector:
         if row.Close <= pivot:
             return None
 
-        # A breakout is a transition from at/below the current resistance
-        # to above it. Compare the previous close with the SAME pivot used
-        # for today's breakout, rather than recomputing yesterday's pivot.
+        # The actual breakout is the transition from at/below the fixed
+        # final-contraction pivot to above it.
         previous_close = float(df.iloc[i - 1].Close)
-        if previous_close >= pivot:
+        if previous_close > pivot:
             return None
 
         return VCPSignal(
