@@ -63,7 +63,7 @@ def diagnose(symbol, raw, detector):
         "raw_contraction_count": 0,
         "three_wave_windows": 0,
         "depth_ok_windows": 0,
-        "volume_ok_windows": 0,
+        "volume_quality_windows": 0,
         "valid_vcp_pattern": 0,
         "fresh_setup": 0,
         "volume_pass": 0,
@@ -107,25 +107,20 @@ def diagnose(symbol, raw, detector):
                 )
             )
             volumes = [c.avg_volume for c in seq]
-            volume_ok = (
-                volumes[-1] <= volumes[0] * 0.90
-                and not any(
-                    later > earlier * detector.cfg.vcp.max_volume_step
-                    for earlier, later in zip(volumes, volumes[1:])
-                )
+            volume_ratio = (
+                volumes[-1] / volumes[0]
+                if volumes[0] > 0
+                else np.nan
             )
             if depth_ok:
                 counts["depth_ok_windows"] += 1
-            if depth_ok and volume_ok:
-                counts["volume_ok_windows"] += 1
 
             local_windows.append({
                 "start": start,
                 "depths": depths,
                 "volumes": volumes,
+                "final_vs_first_volume": volume_ratio,
                 "depth_ok": depth_ok,
-                "volume_ok": volume_ok,
-                "reasons": sequence_reason(seq, detector.cfg.vcp),
             })
 
         setup_result = detector.find_setup(df, i)
@@ -251,8 +246,8 @@ def main():
                         f"  window {w['start']}: "
                         f"depths={[round(x, 4) for x in w['depths']]}, "
                         f"volume={[round(x) for x in w['volumes']]}, "
-                        f"depth_ok={w['depth_ok']}, volume_ok={w['volume_ok']}, "
-                        f"reasons={w['reasons']}"
+                        f"final/first_volume={w['final_vs_first_volume']:.2f}x, "
+                        f"depth_ok={w['depth_ok']}"
                     )
 
     summary_report = pd.DataFrame(summaries)
