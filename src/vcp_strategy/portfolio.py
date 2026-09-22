@@ -111,6 +111,7 @@ class PortfolioBacktester:
         end: str | None = None,
         show_progress: bool = False,
         exit_mode: str = "stop_only",
+        precomputed_signals: dict[pd.Timestamp, list[tuple[str, object]]] | None = None,
     ) -> PortfolioResult:
         if not data:
             raise ValueError("No symbol data supplied.")
@@ -129,8 +130,16 @@ class PortfolioBacktester:
                 f"Choose from {sorted(valid_exit_modes)}."
             )
 
-        self._prepared: dict[str, pd.DataFrame] = {}
-        signals = self._generate_signals(data, show_progress=show_progress)
+        if precomputed_signals is None:
+            self._prepared = {}
+            signals = self._generate_signals(data, show_progress=show_progress)
+        else:
+            signals = precomputed_signals
+            if not hasattr(self, "_prepared") or not self._prepared:
+                raise ValueError(
+                    "precomputed_signals requires the portfolio to be prepared "
+                    "by a prior signal-generation pass."
+                )
 
         all_dates = sorted(
             set().union(*(df.index.tolist() for df in self._prepared.values()))
