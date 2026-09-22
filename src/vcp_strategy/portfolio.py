@@ -110,9 +110,24 @@ class PortfolioBacktester:
         start: str | None = None,
         end: str | None = None,
         show_progress: bool = False,
+        exit_mode: str = "stop_only",
     ) -> PortfolioResult:
         if not data:
             raise ValueError("No symbol data supplied.")
+
+        valid_exit_modes = {
+            "stop_only",
+            "ma20",
+            "ma50",
+            "max126",
+            "max252",
+            "ma50_max252",
+        }
+        if exit_mode not in valid_exit_modes:
+            raise ValueError(
+                f"Unknown exit_mode={exit_mode!r}. "
+                f"Choose from {sorted(valid_exit_modes)}."
+            )
 
         self._prepared: dict[str, pd.DataFrame] = {}
         signals = self._generate_signals(data, show_progress=show_progress)
@@ -142,6 +157,7 @@ class PortfolioBacktester:
         cash = self.starting_capital
         positions: dict[str, PortfolioPosition] = {}
         pending: dict[pd.Timestamp, list[tuple[str, object]]] = {}
+        pending_exits: dict[pd.Timestamp, set[str]] = {}
         trades: list[PortfolioTrade] = []
         equity_values: list[float] = []
         equity_dates: list[pd.Timestamp] = []
@@ -198,7 +214,49 @@ class PortfolioBacktester:
                     )
                     del positions[symbol]
 
-            # 2. Execute yesterday's signals at today's open.
+            # 2. Execute close-based exits scheduled on the previous day.
+            scheduled_exits = pending_exits.pop(date, set())
+            for symbol in list(scheduled_exits):
+                position = positions.get(symbol)
+                if position is None:
+                    continue
+                row = self._row_on_date(symbol, date)
+                if row is None:
+                    continue
+
+                raw_exit = float(row["Open"])
+                fill = self._slipped_exit(
+                    raw_exit, self.cfg.costs.slippage_bps
+                )
+                turnover = fill * position.shares
+                exit_commission = self._commission(turnover)
+                cash += turnover - exit_commission
+
+                gross = (fill - position.entry_price) * position.shares
+                entry_commission = self._entry_commission(position)
+                pnl = gross - entry_commission - exit_commission
+
+                trades.append(
+                    PortfolioTrade(
+                        position.symbol,
+                        position.signal_date,
+                        position.entry_date,
+                        position.entry_price,
+                        date,
+                        fill,
+                        position.shares,
+                        position.stop_price,
+                        pnl,
+                        pnl / (position.entry_price * position.shares),
+                        pnl / position.initial_risk
+                        if position.initial_risk > 0
+                        else np.nan,
+                        "rule_exit",
+                    )
+                )
+                del positions[symbol]
+
+            # 3. Execute yesterday's signals at today's open.
             entries = pending.pop(date, [])
             if entries:
                 ranked = sorted(
@@ -273,7 +331,7 @@ class PortfolioBacktester:
                         initial_risk=per_share_risk * shares,
                     )
 
-            # 3. Queue today's signals for the next trading date for
+            # 4. Queue today's signals for the next trading date for
             # that specific symbol. Using the portfolio-wide next date can
             # incorrectly drop signals for stocks with a missing/suspended
             # session on that day.
@@ -282,7 +340,39 @@ class PortfolioBacktester:
                 if next_date is not None and next_date in all_dates:
                     pending.setdefault(next_date, []).append((symbol, signal))
 
-            # 4. Mark portfolio at today's close.
+            # 5. At today's close, evaluate optional close-based exits and
+            # schedule them for the next available trading session. This avoids
+            # using today's closing price to trigger and fill the same trade.
+            if exit_mode != "stop_only":
+                next_date = self._next_available_date(all_dates, date)
+                if next_date is not None:
+                    for symbol, position in list(positions.items()):
+                        row = self._row_on_date(symbol, date)
+                        if row is None:
+                            continue
+                        held_bars = self._bars_held(symbol, position.entry_date, date)
+                        ma20_exit = (
+                            exit_mode in {"ma20"}
+                            and pd.notna(row["SMA20"])
+                            and float(row["Close"]) < float(row["SMA20"])
+                        )
+                        ma50_exit = (
+                            exit_mode in {"ma50", "ma50_max252"}
+                            and pd.notna(row["SMA50"])
+                            and float(row["Close"]) < float(row["SMA50"])
+                        )
+                        max126_exit = (
+                            exit_mode in {"max126", "ma50_max252"}
+                            and held_bars >= 126
+                        )
+                        max252_exit = (
+                            exit_mode == "max252"
+                            and held_bars >= 252
+                        )
+                        if ma20_exit or ma50_exit or max126_exit or max252_exit:
+                            pending_exits.setdefault(next_date, set()).add(symbol)
+
+            # 6. Mark portfolio at today's close.
             equity_values.append(self._mark_equity(cash, positions, date))
             equity_dates.append(date)
 
@@ -347,6 +437,14 @@ class PortfolioBacktester:
                 equity_values, index=equity_dates, name="equity"
             ),
         )
+
+    def _bars_held(
+        self, symbol: str, entry_date: pd.Timestamp, current_date: pd.Timestamp
+    ) -> int:
+        dates = self._prepared[symbol].index
+        entry_pos = dates.searchsorted(entry_date)
+        current_pos = dates.searchsorted(current_date)
+        return max(0, int(current_pos - entry_pos))
 
     def _row_on_date(self, symbol: str, date: pd.Timestamp):
         df = self._prepared[symbol]
