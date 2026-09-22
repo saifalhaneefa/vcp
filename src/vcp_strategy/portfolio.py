@@ -70,7 +70,6 @@ class PortfolioBacktester:
         signals: dict[pd.Timestamp, list[tuple[str, object]]] = {}
         for symbol, raw in data.items():
             df = self._prepare(raw)
-            # Store the prepared dataframe on the object for simulation.
             self._prepared[symbol] = df
             for i in range(1, len(df) - 1):
                 signal = self.detector.find_signal(df, i)
@@ -115,15 +114,13 @@ class PortfolioBacktester:
         equity_values: list[float] = []
         equity_dates: list[pd.Timestamp] = []
 
-        first_date = all_dates[0]
-        prior_equity = self.starting_capital
-
         for date in all_dates:
-            # 1. Exit positions at today's open when the stop was crossed.
+            # 1. Exit existing positions at today's open/intraday low if stop is hit.
             for symbol, position in list(positions.items()):
                 row = self._row_on_date(symbol, date)
                 if row is None:
                     continue
+
                 low = float(row["Low"])
                 open_price = float(row["Open"])
                 exit_price = None
@@ -141,13 +138,13 @@ class PortfolioBacktester:
                         exit_price, self.cfg.costs.slippage_bps
                     )
                     turnover = fill * position.shares
-                    cost = self._cost(turnover)
-                    cash += turnover - cost
-                    pnl = (
-                        (fill - position.entry_price) * position.shares
-                        - cost
-                        - self._entry_cost(position)
-                    )
+                    exit_commission = self._commission(turnover)
+                    cash += turnover - exit_commission
+
+                    gross = (fill - position.entry_price) * position.shares
+                    entry_commission = self._entry_commission(position)
+                    pnl = gross - entry_commission - exit_commission
+
                     trades.append(
                         PortfolioTrade(
                             symbol,
@@ -159,8 +156,7 @@ class PortfolioBacktester:
                             position.shares,
                             position.stop_price,
                             pnl,
-                            pnl
-                            / (position.entry_price * position.shares),
+                            pnl / (position.entry_price * position.shares),
                             pnl / position.initial_risk
                             if position.initial_risk > 0
                             else np.nan,
@@ -180,6 +176,7 @@ class PortfolioBacktester:
                         x[0],
                     ),
                 )
+
                 current_equity_for_sizing = self._mark_equity(
                     cash, positions, date
                 )
@@ -205,17 +202,12 @@ class PortfolioBacktester:
                     stop = float(signal.stop_reference)
                     per_share_risk = entry - stop
 
-                    # A downside gap through the stop makes this setup
-                    # incompatible with the fixed V1 stop rule.
                     if per_share_risk <= 0:
                         continue
 
                     max_risk_shares = math.floor(risk_budget / per_share_risk)
                     available_cash = max(0.0, cash)
-                    cost_rate = (
-                        self.cfg.costs.commission_bps
-                        + self.cfg.costs.slippage_bps
-                    ) / 10000.0
+                    cost_rate = self.cfg.costs.commission_bps / 10000.0
                     max_cash_shares = math.floor(
                         available_cash / (entry * (1.0 + cost_rate))
                     )
@@ -224,8 +216,8 @@ class PortfolioBacktester:
                         continue
 
                     turnover = entry * shares
-                    cost = self._cost(turnover)
-                    total_debit = turnover + cost
+                    entry_commission = self._commission(turnover)
+                    total_debit = turnover + entry_commission
                     if total_debit > cash:
                         continue
 
@@ -240,34 +232,34 @@ class PortfolioBacktester:
                         initial_risk=per_share_risk * shares,
                     )
 
-            # 3. Queue today's signals for next trading day.
+            # 3. Queue today's signals for the next available trading date.
             next_date = self._next_available_date(all_dates, date)
             if next_date is not None:
                 for symbol, signal in signals.get(date, []):
                     pending.setdefault(next_date, []).append((symbol, signal))
 
-            # 4. Mark all positions to close for the daily equity curve.
-            equity = self._mark_equity(cash, positions, date)
-            equity_values.append(equity)
+            # 4. Mark portfolio at today's close.
+            equity_values.append(self._mark_equity(cash, positions, date))
             equity_dates.append(date)
-            prior_equity = equity
 
-        # 5. Liquidate anything still open at the final available close.
+        # 5. Liquidate any remaining position at the final close so the
+        # reported ending capital agrees with the returned trade ledger.
         last_date = all_dates[-1]
         for symbol, position in list(positions.items()):
             row = self._row_on_date(symbol, last_date)
             if row is None:
                 continue
+
             raw_exit = float(row["Close"])
             fill = self._slipped_exit(raw_exit, self.cfg.costs.slippage_bps)
             turnover = fill * position.shares
-            cost = self._cost(turnover)
-            cash += turnover - cost
-            pnl = (
-                (fill - position.entry_price) * position.shares
-                - cost
-                - self._entry_cost(position)
-            )
+            exit_commission = self._commission(turnover)
+            cash += turnover - exit_commission
+
+            gross = (fill - position.entry_price) * position.shares
+            entry_commission = self._entry_commission(position)
+            pnl = gross - entry_commission - exit_commission
+
             trades.append(
                 PortfolioTrade(
                     symbol,
@@ -288,9 +280,14 @@ class PortfolioBacktester:
             )
             del positions[symbol]
 
+        if equity_dates:
+            equity_values[-1] = cash
+
         return PortfolioResult(
             trades=trades,
-            equity_curve=pd.Series(equity_values, index=equity_dates, name="equity"),
+            equity_curve=pd.Series(
+                equity_values, index=equity_dates, name="equity"
+            ),
         )
 
     def _row_on_date(self, symbol: str, date: pd.Timestamp):
@@ -319,19 +316,17 @@ class PortfolioBacktester:
                 value += float(row["Close"]) * position.shares
         return value
 
-    def _entry_cost(self, position: PortfolioPosition) -> float:
-        return self._cost(position.entry_price * position.shares)
+    def _entry_commission(self, position: PortfolioPosition) -> float:
+        return self._commission(position.entry_price * position.shares)
 
-    def _cost(self, turnover: float) -> float:
+    def _commission(self, turnover: float) -> float:
         return turnover * self.cfg.costs.commission_bps / 10000.0
 
     @staticmethod
-    def metrics(result: PortfolioResult, starting_capital: float | None = None) -> dict:
-        start = float(
-            result.equity_curve.iloc[0]
-            if starting_capital is None
-            else starting_capital
-        )
+    def metrics(
+        result: PortfolioResult, starting_capital: float = 1_000_000.0
+    ) -> dict:
+        start = float(starting_capital)
         end = float(result.equity_curve.iloc[-1])
         days = max(
             1.0,
@@ -361,10 +356,14 @@ class PortfolioBacktester:
             "sharpe": float(sharpe),
             "ending_capital": end,
             "net_profit": end - start,
-            "average_trade_return": float(np.mean([t.return_pct for t in result.trades]))
+            "average_trade_return": float(
+                np.mean([t.return_pct for t in result.trades])
+            )
             if result.trades
             else 0.0,
-            "average_r_multiple": float(np.nanmean([t.r_multiple for t in result.trades]))
+            "average_r_multiple": float(
+                np.nanmean([t.r_multiple for t in result.trades])
+            )
             if result.trades
             else 0.0,
         }
