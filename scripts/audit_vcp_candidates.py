@@ -97,9 +97,16 @@ def audit_symbol(symbol: str, raw: pd.DataFrame, detector: VCPDetector,
         if close <= pivot:
             continue
 
-        lookback = detector.cfg.vcp.breakout_transition_lookback_days
-        prior = df.iloc[max(0, i - lookback):i]["Close"]
-        if not prior.empty and float(prior.max()) > pivot:
+        # Keep only the first close above this pivot after the final recovery
+        # high established it. Later recrossings of the same pivot are not new
+        # VCP breakouts.
+        final = seq[-1]
+        if final.recovery_high_idx is None:
+            continue
+        pivot_abs_idx = setup.index[final.recovery_high_idx]
+        pivot_pos = df.index.get_loc(pivot_abs_idx)
+        prior_since_pivot = df.iloc[pivot_pos + 1:i]["Close"]
+        if not prior_since_pivot.empty and float(prior_since_pivot.max()) > pivot:
             continue
 
         ratio = (
