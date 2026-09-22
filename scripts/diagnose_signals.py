@@ -32,8 +32,13 @@ def load_data(path: Path) -> pd.DataFrame:
     return df.sort_values("Date").drop_duplicates("Date").set_index("Date")
 
 
-def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector,
-             start: pd.Timestamp, end: pd.Timestamp) -> tuple[dict, list[dict]]:
+def diagnose(
+    symbol: str,
+    raw: pd.DataFrame,
+    detector: VCPDetector,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> tuple[dict, list[dict]]:
     df = add_indicators(raw, detector.cfg.trend)
     df["VolumeMA"] = df["Volume"].rolling(
         detector.cfg.vcp.volume_ma_days,
@@ -58,11 +63,7 @@ def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector,
             continue
         valid_pattern += 1
 
-        pivot = float(
-            df.iloc[
-                max(start_idx, i - detector.cfg.vcp.pivot_lookback_days) : i
-            ].High.max()
-        )
+        pivot = detector._pivot_before(df, i)
         row = df.iloc[i]
         ratio = float(row.Volume / row.VolumeMA) if row.VolumeMA > 0 else float("nan")
 
@@ -70,6 +71,14 @@ def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector,
             continue
         if row.Close <= pivot:
             continue
+
+        # Count only a true transition through resistance, not subsequent
+        # strong-volume days during the same breakout advance.
+        previous_pivot = detector._pivot_before(df, i - 1)
+        previous_close = float(df.iloc[i - 1].Close)
+        if pd.isfinite(previous_pivot) and previous_close >= previous_pivot:
+            continue
+
         breakout_confirmed += 1
 
         signal = detector.find_signal(df, i)
