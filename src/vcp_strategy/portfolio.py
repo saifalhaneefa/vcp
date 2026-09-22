@@ -66,17 +66,35 @@ class PortfolioBacktester:
         return df
 
     def _generate_signals(
-        self, data: dict[str, pd.DataFrame]
+        self,
+        data: dict[str, pd.DataFrame],
+        show_progress: bool = False,
     ) -> dict[pd.Timestamp, list[tuple[str, object]]]:
         signals: dict[pd.Timestamp, list[tuple[str, object]]] = {}
-        for symbol, raw in data.items():
+        total = len(data)
+        for n, (symbol, raw) in enumerate(data.items(), 1):
             df = self._prepare(raw)
             self._prepared[symbol] = df
             for i in range(1, len(df) - 1):
                 signal = self.detector.find_signal(df, i)
                 if signal is not None:
                     signals.setdefault(df.index[i], []).append((symbol, signal))
+
+            if show_progress:
+                self._show_progress("Signal generation", n, total, symbol)
+        if show_progress:
+            print()
         return signals
+
+    @staticmethod
+    def _show_progress(label: str, current: int, total: int, detail: str = "") -> None:
+        total = max(1, total)
+        pct = current / total
+        width = 30
+        filled = int(width * pct)
+        bar = "=" * filled + "." * (width - filled)
+        suffix = f" | {detail}" if detail else ""
+        print(f"\r{label}: [{bar}] {current}/{total} ({pct:.0%}){suffix}", end="", flush=True)
 
     @staticmethod
     def _slipped_entry(price: float, bps: float) -> float:
@@ -91,12 +109,13 @@ class PortfolioBacktester:
         data: dict[str, pd.DataFrame],
         start: str | None = None,
         end: str | None = None,
+        show_progress: bool = False,
     ) -> PortfolioResult:
         if not data:
             raise ValueError("No symbol data supplied.")
 
         self._prepared: dict[str, pd.DataFrame] = {}
-        signals = self._generate_signals(data)
+        signals = self._generate_signals(data, show_progress=show_progress)
 
         all_dates = sorted(
             set().union(*(df.index.tolist() for df in self._prepared.values()))
@@ -127,7 +146,8 @@ class PortfolioBacktester:
         equity_values: list[float] = []
         equity_dates: list[pd.Timestamp] = []
 
-        for date in all_dates:
+        total_dates = len(all_dates)
+        for date_num, date in enumerate(all_dates, 1):
             # 1. Exit existing positions at today's open/intraday low if stop is hit.
             for symbol, position in list(positions.items()):
                 row = self._row_on_date(symbol, date)
@@ -262,6 +282,21 @@ class PortfolioBacktester:
             # 4. Mark portfolio at today's close.
             equity_values.append(self._mark_equity(cash, positions, date))
             equity_dates.append(date)
+
+            if show_progress and (
+                date_num == 1
+                or date_num == total_dates
+                or date_num % max(1, total_dates // 100) == 0
+            ):
+                self._show_progress(
+                    "Portfolio backtest",
+                    date_num,
+                    total_dates,
+                    str(pd.Timestamp(date).date()),
+                )
+
+        if show_progress:
+            print()
 
         # 5. Liquidate remaining positions at the final close.
         last_date = all_dates[-1]
