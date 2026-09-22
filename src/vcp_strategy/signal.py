@@ -150,15 +150,11 @@ class VCPDetector:
         ):
             return False
 
-        # Allow some volume noise but require meaningful drying across the setup.
-        volumes = [c.avg_volume for c in seq]
-        if volumes[-1] > volumes[0] * 0.90:
-            return False
-        if any(
-            later > earlier * self.cfg.vcp.max_volume_step
-            for earlier, later in zip(volumes, volumes[1:])
-        ):
-            return False
+        # Volume is a VCP quality characteristic, not a structural requirement
+        # at this stage. The hard volume confirmation is applied on the breakout
+        # day (Volume / 50-day average >= breakout_volume_multiple). Keeping
+        # setup volume soft avoids rejecting structurally valid patterns because
+        # one contraction contains an unusual-volume event.
 
         return True
 
