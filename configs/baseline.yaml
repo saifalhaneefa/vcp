@@ -14,6 +14,9 @@ vcp:
   max_contraction_ratio: 0.85
   min_contraction_separation: 3
   max_contraction_lookback_days: 100
+  max_final_contraction_age_bars: 20
+  max_post_contraction_runup: 0.25
+  max_breakout_extension: 0.10
   pivot_lookback_days: 10
   volume_ma_days: 50
   max_volume_step: 1.10
