@@ -23,9 +23,53 @@ For a small test first:
 python scripts/download_data.py --limit 20
 ```
 
+## VCP detector
+
+The detector now separates the pattern into explicit stages:
+
+```text
+Trend template
+    ↓
+Confirmed swing highs/lows
+    ↓
+Sequential HIGH → LOW → HIGH contractions
+    ↓
+Progressively shallower contractions
+    ↓
+Final contraction / recovery high
+    ↓
+Pivot
+    ↓
+Breakout close + volume confirmation
+```
+
+The implementation intentionally avoids treating every strong-volume follow-through day as a new VCP signal.
+
+The numerical filters are research parameters, not claims that the original discretionary method uses these exact values. They should be subjected to sensitivity and out-of-sample testing.
+
+## Run diagnostics
+
+For one stock:
+
+```bash
+python scripts/diagnose_signals.py --symbol ACC
+```
+
+To inspect the detected VCP structures:
+
+```bash
+python scripts/diagnose_signals.py --symbol ACC --debug
+```
+
+For the complete downloaded universe:
+
+```bash
+python scripts/diagnose_signals.py
+```
+
 ## Run the portfolio backtest
 
-The current runner uses the multi-stock portfolio engine:
+The runner uses the multi-stock portfolio engine:
 
 ```bash
 python scripts/backtest_portfolio.py
@@ -39,7 +83,7 @@ Default settings:
 - Portfolio risk per trade: **1%**
 - Long-only, no leverage
 - Signal generated on day t, entry at next trading day's open
-- Stop checked using next day's open for gap-through-stop and intraday low otherwise
+- Stop checked using the next day's open for gap-through-stop and intraday low otherwise
 - Commission and slippage included from the baseline configuration
 
 The runner writes:
@@ -51,7 +95,7 @@ reports/portfolio_equity.csv
 
 ## Backtest methodology
 
-The strategy rules are a mechanical approximation of the supplied VCP video transcript.
+The current strategy is a mechanical approximation of the supplied VCP video transcript. The swing-based detector is intended to model the observable structural elements rather than reproduce discretionary chart judgment exactly.
 
 Primary research period:
 
@@ -64,9 +108,3 @@ The extra 2013-2014 data is warm-up data for the 150/200-day moving averages and
 For the first research run, the universe is the **current NIFTY 500**. This introduces survivorship bias because today's constituents are not the same as the constituents that existed throughout 2015-2025. Results from this universe are therefore an initial research test, not a clean historical performance estimate.
 
 A later research version should use point-in-time historical constituents and include delisted securities where reliable data is available.
-
-## Current limitations
-
-The present VCP detector is deliberately mechanical and conservative enough for backtesting, but it does not yet fully model discretionary elements from the video, such as institutional accumulation/ distribution context, nuanced contraction identification, or a manually interpreted "tightness" structure.
-
-Those rules should be refined only after we have a baseline result and inspect actual signal/trade examples.
