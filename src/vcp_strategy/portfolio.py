@@ -345,31 +345,36 @@ class PortfolioBacktester:
             # using today's closing price to trigger and fill the same trade.
             if exit_mode != "stop_only":
                 for symbol, position in list(positions.items()):
+                    row = self._row_on_date(symbol, date)
+                    if row is None:
+                        continue
+
                     next_date = self._next_symbol_date(symbol, date)
                     if next_date is None or next_date not in all_dates:
                         continue
-                        row = self._row_on_date(symbol, date)
-                        if row is None:
-                            continue
-                        held_bars = self._bars_held(symbol, position.entry_date, date)
-                        ma20_exit = (
-                            exit_mode in {"ma20"}
-                            and pd.notna(row["SMA20"])
-                            and float(row["Close"]) < float(row["SMA20"])
-                        )
-                        ma50_exit = (
-                            exit_mode in {"ma50", "ma50_max252"}
-                            and pd.notna(row["SMA50"])
-                            and float(row["Close"]) < float(row["SMA50"])
-                        )
-                        max126_exit = (
-                            exit_mode in {"max126", "ma50_max252"}
-                            and held_bars >= 126
-                        )
-                        max252_exit = (
-                            exit_mode == "max252"
-                            and held_bars >= 252
-                        )
+
+                    held_bars = self._bars_held(
+                        symbol, position.entry_date, date
+                    )
+                    ma20_exit = (
+                        exit_mode == "ma20"
+                        and pd.notna(row["SMA20"])
+                        and float(row["Close"]) < float(row["SMA20"])
+                    )
+                    ma50_exit = (
+                        exit_mode in {"ma50", "ma50_max252"}
+                        and pd.notna(row["SMA50"])
+                        and float(row["Close"]) < float(row["SMA50"])
+                    )
+                    max126_exit = (
+                        exit_mode in {"max126", "ma50_max252"}
+                        and held_bars >= 126
+                    )
+                    max252_exit = (
+                        exit_mode == "max252"
+                        and held_bars >= 252
+                    )
+
                     if ma20_exit or ma50_exit or max126_exit or max252_exit:
                         pending_exits.setdefault(next_date, set()).add(symbol)
 
