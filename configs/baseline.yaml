@@ -11,13 +11,16 @@ vcp:
   min_first_contraction: 0.05
   min_final_contraction: 0.01
   max_final_contraction: 0.10
-  max_contraction_ratio: 0.85
-  min_contraction_separation: 3
-  max_contraction_lookback_days: 100
+  max_contraction_ratio: 0.90
+  min_contraction_separation: 5
+  max_contraction_lookback_days: 150
+  swing_window: 3
+  min_rebound_from_low: 0.03
   max_final_contraction_age_bars: 20
-  max_post_contraction_runup: 0.25
+  max_pivot_distance_from_final_low: 0.20
   max_breakout_extension: 0.10
-  pivot_lookback_days: 10
+  breakout_transition_lookback_days: 5
+  pivot_lookback_days: 30
   volume_ma_days: 50
   max_volume_step: 1.10
   breakout_volume_multiple: 1.50
