@@ -108,6 +108,18 @@ class PortfolioBacktester:
         if not all_dates:
             raise ValueError("No trading dates remain after start/end filtering.")
 
+        # Only allow signals generated inside the requested research window.
+        # The data intentionally contains earlier history for indicator warm-up;
+        # those pre-start signals must not be carried into the backtest.
+        start_ts = pd.Timestamp(start) if start is not None else None
+        end_ts = pd.Timestamp(end) if end is not None else None
+        signals = {
+            date: items
+            for date, items in signals.items()
+            if (start_ts is None or date >= start_ts)
+            and (end_ts is None or date <= end_ts)
+        }
+
         cash = self.starting_capital
         positions: dict[str, PortfolioPosition] = {}
         pending: dict[pd.Timestamp, list[tuple[str, object]]] = {}
