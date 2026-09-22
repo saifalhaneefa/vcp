@@ -273,10 +273,13 @@ class PortfolioBacktester:
                         initial_risk=per_share_risk * shares,
                     )
 
-            # 3. Queue today's signals for the next available trading date.
-            next_date = self._next_available_date(all_dates, date)
-            if next_date is not None:
-                for symbol, signal in signals.get(date, []):
+            # 3. Queue today's signals for the next trading date for
+            # that specific symbol. Using the portfolio-wide next date can
+            # incorrectly drop signals for stocks with a missing/suspended
+            # session on that day.
+            for symbol, signal in signals.get(date, []):
+                next_date = self._next_symbol_date(symbol, date)
+                if next_date is not None and next_date in all_dates:
                     pending.setdefault(next_date, []).append((symbol, signal))
 
             # 4. Mark portfolio at today's close.
@@ -351,12 +354,14 @@ class PortfolioBacktester:
             return None
         return df.loc[date]
 
-    @staticmethod
-    def _next_available_date(
-        dates: list[pd.Timestamp], date: pd.Timestamp
+    def _next_symbol_date(
+        self, symbol: str, date: pd.Timestamp
     ) -> pd.Timestamp | None:
-        pos = dates.index(date)
-        return dates[pos + 1] if pos + 1 < len(dates) else None
+        dates = self._prepared[symbol].index
+        pos = dates.searchsorted(date, side="right")
+        if pos >= len(dates):
+            return None
+        return pd.Timestamp(dates[pos])
 
     def _mark_equity(
         self,
