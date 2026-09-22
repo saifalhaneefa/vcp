@@ -10,6 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -72,11 +73,9 @@ def diagnose(
         if row.Close <= pivot:
             continue
 
-        # Count only a true transition through resistance, not subsequent
-        # strong-volume days during the same breakout advance.
         previous_pivot = detector._pivot_before(df, i - 1)
         previous_close = float(df.iloc[i - 1].Close)
-        if pd.isfinite(previous_pivot) and previous_close >= previous_pivot:
+        if np.isfinite(previous_pivot) and previous_close >= previous_pivot:
             continue
 
         breakout_confirmed += 1
@@ -135,8 +134,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     parser.add_argument(
-        "--config", type=Path,
-        default=PROJECT_ROOT / "configs" / "baseline.yaml"
+        "--config",
+        type=Path,
+        default=PROJECT_ROOT / "configs" / "baseline.yaml",
     )
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--start", default="2015-01-01")
