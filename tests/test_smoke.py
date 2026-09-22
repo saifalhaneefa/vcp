@@ -4,7 +4,7 @@ import pandas as pd
 from vcp_strategy import Backtester, PortfolioBacktester, VCPConfig
 
 
-def make_data(n=500):
+def make_data(n=1000):
     idx = pd.date_range("2013-01-01", periods=n, freq="B")
     close = pd.Series(np.linspace(100, 220, n), index=idx)
     return pd.DataFrame(
