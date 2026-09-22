@@ -112,8 +112,12 @@ def diagnose(symbol, raw, detector):
                 if volumes[0] > 0
                 else np.nan
             )
+            volume_drying = np.isfinite(volume_ratio) and volume_ratio <= 1.0
+
             if depth_ok:
                 counts["depth_ok_windows"] += 1
+            if volume_drying:
+                counts["volume_quality_windows"] += 1
 
             local_windows.append({
                 "start": start,
