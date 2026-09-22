@@ -4,6 +4,7 @@ Usage:
     python scripts/diagnose_signals.py
     python scripts/diagnose_signals.py --symbol ADANIGREEN
     python scripts/diagnose_signals.py --symbol ADANIGREEN --verbose
+    python scripts/diagnose_signals.py --symbol ADANIGREEN --debug
 """
 from __future__ import annotations
 
@@ -194,18 +195,82 @@ def build_rejection_report(
     return pd.DataFrame(rows)
 
 
+def print_candidate_debug(symbol: str, raw: pd.DataFrame, detector: VCPDetector) -> list[dict]:
+    df = add_indicators(raw, detector.cfg.trend)
+    df["VolumeMA"] = df["Volume"].rolling(
+        detector.cfg.vcp.volume_ma_days,
+        min_periods=detector.cfg.vcp.volume_ma_days,
+    ).mean()
+
+    rows: list[dict] = []
+
+    print("\n" + "=" * 80)
+    print(f"VCP STRUCTURE DEBUG: {symbol}")
+    print("=" * 80)
+
+    for i in range(1, len(df) - 1):
+        if not detector.trend_ok(df.iloc[i]):
+            continue
+
+        start_idx = max(0, i - detector.cfg.vcp.max_contraction_lookback_days)
+        setup = df.iloc[start_idx:i]
+        contractions = detector.find_contractions(setup)
+        if not detector.valid(contractions):
+            continue
+
+        candidate_date = pd.Timestamp(df.index[i])
+        print(f"\nCandidate date: {candidate_date.date()}")
+        print(f"  Current close: {float(df.iloc[i].Close):.2f}")
+        print(f"  Previous close: {float(df.iloc[i - 1].Close):.2f}")
+        print(f"  Current pivot (C-last high): {float(contractions[-1].high):.2f}")
+        print("  Contractions:")
+
+        for n, c in enumerate(contractions, start=1):
+            hi_date = pd.Timestamp(setup.index[c.high_idx]).date()
+            lo_date = pd.Timestamp(setup.index[c.low_idx]).date()
+            print(
+                f"    C{n}: {hi_date} high={c.high:.2f} -> "
+                f"{lo_date} low={c.low:.2f}; depth={c.depth:.2%}; "
+                f"avg_volume={c.avg_volume:.0f}"
+            )
+
+        recent = df.iloc[max(0, i - 12):i + 1][
+            ["Open", "High", "Low", "Close", "Volume"]
+        ]
+        print("  Recent bars:")
+        print(recent.to_string())
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "candidate_date": candidate_date.date().isoformat(),
+                "contractions": " | ".join(
+                    f"C{n}:{pd.Timestamp(setup.index[c.high_idx]).date()}->{pd.Timestamp(setup.index[c.low_idx]).date()} "
+                    f"{c.high:.2f}->{c.low:.2f} ({c.depth:.2%})"
+                    for n, c in enumerate(contractions, start=1)
+                ),
+                "pivot": float(contractions[-1].high),
+                "previous_close": float(df.iloc[i - 1].Close),
+                "close": float(df.iloc[i].Close),
+            }
+        )
+
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "baseline.yaml",
+        default=PROJECT_ROOT / "configs" / "baseline.yaml"
     )
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--start", default="2015-01-01")
     parser.add_argument("--end", default="2025-12-31")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -222,20 +287,24 @@ def main() -> None:
     summaries = []
     complete_details = []
     rejection_reports = []
+    debug_rows = []
 
     for path in paths:
         if path.name == "download_failures.txt" or not path.exists():
             continue
 
         raw = load_data(path)
-        summary, details = diagnose(path.stem, raw, detector, start, end)
+        summary, rows = diagnose(path.stem, raw, detector, start, end)
         summaries.append(summary)
-        complete_details.extend(details)
+        complete_details.extend(rows)
 
         if args.verbose:
             rejection_reports.append(
                 build_rejection_report(path.stem, raw, detector)
             )
+
+        if args.debug:
+            debug_rows.extend(print_candidate_debug(path.stem, raw, detector))
 
     summary_report = pd.DataFrame(summaries)
     detail_report = pd.DataFrame(complete_details)
@@ -257,6 +326,11 @@ def main() -> None:
 
     print(f"\nSaved: {out / 'signal_diagnostics.csv'}")
     print(f"Saved: {out / 'signal_candidates.csv'}")
+
+    if args.debug and debug_rows:
+        debug_report = pd.DataFrame(debug_rows)
+        debug_report.to_csv(out / "vcp_candidate_debug.csv", index=False)
+        print(f"Saved: {out / 'vcp_candidate_debug.csv'}")
 
     if args.verbose and rejection_reports:
         verbose_report = pd.concat(rejection_reports, ignore_index=True)
