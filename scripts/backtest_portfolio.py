@@ -73,6 +73,12 @@ def main() -> None:
         action="store_true",
         help="Disable live progress output.",
     )
+    parser.add_argument(
+        "--exit-mode",
+        choices=["stop_only", "ma20", "ma50", "max126", "max252", "ma50_max252"],
+        default="stop_only",
+        help="Experimental exit model; baseline is stop_only.",
+    )
     args = parser.parse_args()
 
     if not args.data_dir.exists():
@@ -93,6 +99,7 @@ def main() -> None:
         start=args.start,
         end=args.end,
         show_progress=not args.no_progress,
+        exit_mode=args.exit_mode,
     )
     metrics = backtester.metrics(result, starting_capital=args.capital)
 
