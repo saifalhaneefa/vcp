@@ -1,4 +1,10 @@
-"""Diagnose VCP candidates and show exactly where signals are rejected."""
+"""Diagnose VCP candidates and show exactly where signals are rejected.
+
+Usage:
+    python scripts/diagnose_signals.py
+    python scripts/diagnose_signals.py --symbol ACC
+    python scripts/diagnose_signals.py --symbol ACC --debug
+"""
 from __future__ import annotations
 
 import argparse
@@ -47,6 +53,7 @@ def diagnose(symbol, raw, detector, start, end):
         "complete_signals": 0,
     }
     details = []
+    candidate_debug = []
 
     for i in range(1, len(df) - 1):
         if not detector.trend_ok(df.iloc[i]):
@@ -84,10 +91,7 @@ def diagnose(symbol, raw, detector, start, end):
         volume_ok = np.isfinite(ratio) and ratio >= detector.cfg.vcp.breakout_volume_multiple
         pivot_ok = np.isfinite(pivot) and close > pivot
         transition_ok = np.isfinite(pivot) and previous_close <= pivot
-        extension_ok = (
-            pivot_ok
-            and close / pivot - 1.0 <= detector.cfg.vcp.max_breakout_extension
-        )
+        extension_ok = pivot_ok and close / pivot - 1.0 <= detector.cfg.vcp.max_breakout_extension
 
         if volume_ok:
             counts["volume_pass"] += 1
@@ -97,6 +101,35 @@ def diagnose(symbol, raw, detector, start, end):
             counts["transition_pass"] += 1
         if extension_ok:
             counts["extension_ok"] += 1
+
+        final = cs[-1]
+        candidate_debug.append(
+            {
+                "date": pd.Timestamp(df.index[i]).date().isoformat(),
+                "final_high_date": pd.Timestamp(setup.index[final.high_idx]).date().isoformat(),
+                "final_low_date": pd.Timestamp(setup.index[final.low_idx]).date().isoformat(),
+                "final_high": final.high,
+                "final_low": final.low,
+                "final_depth_pct": final.depth,
+                "final_age_bars": final_age,
+                "post_contraction_runup_pct": runup,
+                "pivot": pivot,
+                "close": close,
+                "close_minus_pivot_pct": close / pivot - 1 if np.isfinite(pivot) else np.nan,
+                "previous_close": previous_close,
+                "volume_ratio": ratio,
+                "volume_ok": volume_ok,
+                "pivot_ok": pivot_ok,
+                "transition_ok": transition_ok,
+                "extension_ok": extension_ok,
+                "fresh_ok": fresh_ok,
+                "runup_ok": runup_ok,
+                "complete": (
+                    fresh_ok and runup_ok and volume_ok and pivot_ok
+                    and transition_ok and extension_ok
+                ),
+            }
+        )
 
         if (
             fresh_ok
@@ -109,34 +142,31 @@ def diagnose(symbol, raw, detector, start, end):
             counts["complete_signals"] += 1
             next_date = pd.Timestamp(df.index[i + 1])
             raw_open = float(df.iloc[i + 1].Open)
-            entry = raw_open * (
-                1 + detector.cfg.costs.slippage_bps / 10000.0
-            )
+            entry = raw_open * (1 + detector.cfg.costs.slippage_bps / 10000.0)
             stop = max(
                 close * (1 - detector.cfg.risk.max_stop_loss_pct),
                 entry * (1 - detector.cfg.risk.max_stop_loss_pct),
             )
-            details.append({
-                "symbol": symbol,
-                "signal_date": pd.Timestamp(df.index[i]).date().isoformat(),
-                "entry_date": next_date.date().isoformat(),
-                "signal_close": close,
-                "pivot": pivot,
-                "close_minus_pivot_pct": close / pivot - 1,
-                "final_contraction_age_bars": final_age,
-                "post_contraction_runup_pct": runup,
-                "breakout_volume_ratio": ratio,
-                "entry_open": raw_open,
-                "simulated_entry": entry,
-                "stop": stop,
-                "entry_status": (
-                    "eligible" if start <= next_date <= end
-                    else "outside_backtest"
-                ),
-            })
+            details.append(
+                {
+                    "symbol": symbol,
+                    "signal_date": pd.Timestamp(df.index[i]).date().isoformat(),
+                    "entry_date": next_date.date().isoformat(),
+                    "signal_close": close,
+                    "pivot": pivot,
+                    "close_minus_pivot_pct": close / pivot - 1,
+                    "final_contraction_age_bars": final_age,
+                    "post_contraction_runup_pct": runup,
+                    "breakout_volume_ratio": ratio,
+                    "entry_open": raw_open,
+                    "simulated_entry": entry,
+                    "stop": stop,
+                    "planned_loss_pct": 1 - stop / entry,
+                }
+            )
 
     summary = {"symbol": symbol, "rows": len(df), **counts}
-    return summary, details
+    return summary, details, pd.DataFrame(candidate_debug)
 
 
 def main():
@@ -146,6 +176,7 @@ def main():
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--start", default="2015-01-01")
     parser.add_argument("--end", default="2025-12-31")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -159,31 +190,52 @@ def main():
         else sorted(args.data_dir.glob("*.csv"))
     )
 
-    summaries, details = [], []
+    summaries, details, debug_frames = [], [], []
+
     for path in paths:
         if path.name == "download_failures.txt" or not path.exists():
             continue
-        summary, rows = diagnose(path.stem, load_data(path), detector, start, end)
+
+        summary, rows, debug = diagnose(
+            path.stem, load_data(path), detector, start, end
+        )
         summaries.append(summary)
         details.extend(rows)
 
+        if args.debug and not debug.empty:
+            debug.insert(0, "symbol", path.stem)
+            debug_frames.append(debug)
+
     summary_report = pd.DataFrame(summaries)
     detail_report = pd.DataFrame(details)
+
     if summary_report.empty:
         raise SystemExit("No usable CSV files found.")
 
     print("SIGNAL SUMMARY")
     print(summary_report.to_string(index=False))
+
     if not detail_report.empty:
-        print("\nCOMPLETE SIGNALS")
+        print("
+COMPLETE SIGNALS")
         print(detail_report.to_string(index=False))
 
     out = PROJECT_ROOT / "reports"
     out.mkdir(exist_ok=True)
     summary_report.to_csv(out / "signal_diagnostics.csv", index=False)
     detail_report.to_csv(out / "signal_candidates.csv", index=False)
-    print(f"\nSaved: {out / 'signal_diagnostics.csv'}")
+
+    print(f"
+Saved: {out / 'signal_diagnostics.csv'}")
     print(f"Saved: {out / 'signal_candidates.csv'}")
+
+    if args.debug and debug_frames:
+        debug_report = pd.concat(debug_frames, ignore_index=True)
+        print("
+VALID VCP CANDIDATE DETAILS")
+        print(debug_report.to_string(index=False))
+        debug_report.to_csv(out / "vcp_candidate_debug.csv", index=False)
+        print(f"Saved: {out / 'vcp_candidate_debug.csv'}")
 
 
 if __name__ == "__main__":
