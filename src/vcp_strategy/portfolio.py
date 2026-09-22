@@ -47,8 +47,9 @@ class PortfolioBacktester:
     """Long-only, no-leverage, daily portfolio simulation.
 
     Signals are generated from data through day t and entered at the next
-    trading day's open. Stops are evaluated conservatively using the next
-    day's open for gaps and the stop price otherwise.
+    trading day's open. The stop is constrained to the configured maximum
+    loss from the actual entry price, so the 8% rule cannot become a larger
+    loss merely because the stock gaps upward between signal and entry.
     """
 
     def __init__(self, config, starting_capital: float = 1_000_000.0):
@@ -199,9 +200,17 @@ class PortfolioBacktester:
                     entry = self._slipped_entry(
                         raw_open, self.cfg.costs.slippage_bps
                     )
-                    stop = float(signal.stop_reference)
-                    per_share_risk = entry - stop
 
+                    # The supplied VCP rules cap the stop at 8% below the
+                    # actual buy price. A pattern-derived stop can be tighter,
+                    # but never wider than the configured maximum.
+                    max_loss_stop = entry * (
+                        1.0 - self.cfg.risk.max_stop_loss_pct
+                    )
+                    pattern_stop = float(signal.stop_reference)
+                    stop = max(pattern_stop, max_loss_stop)
+
+                    per_share_risk = entry - stop
                     if per_share_risk <= 0:
                         continue
 
@@ -242,8 +251,7 @@ class PortfolioBacktester:
             equity_values.append(self._mark_equity(cash, positions, date))
             equity_dates.append(date)
 
-        # 5. Liquidate any remaining position at the final close so the
-        # reported ending capital agrees with the returned trade ledger.
+        # 5. Liquidate remaining positions at the final close.
         last_date = all_dates[-1]
         for symbol, position in list(positions.items()):
             row = self._row_on_date(symbol, last_date)
