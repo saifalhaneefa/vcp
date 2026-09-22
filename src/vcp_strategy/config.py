@@ -29,6 +29,7 @@ class PatternConfig:
 class RiskConfig:
     max_stop_loss_pct:float=0.08
     portfolio_risk_per_trade:float=0.01
+    max_simultaneous_positions:int=10
 
 @dataclass(frozen=True)
 class CostConfig:
@@ -44,4 +45,9 @@ class VCPConfig:
 
 def load_config(path):
     raw=yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return VCPConfig(TrendConfig(**raw.get("trend",{})),PatternConfig(**raw.get("vcp",{})),RiskConfig(**raw.get("risk",{})),CostConfig(**raw.get("costs",{})))
+    return VCPConfig(
+        TrendConfig(**raw.get("trend",{})),
+        PatternConfig(**raw.get("vcp",{})),
+        RiskConfig(**raw.get("risk",{})),
+        CostConfig(**raw.get("costs",{})),
+    )
