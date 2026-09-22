@@ -61,15 +61,23 @@ def main() -> None:
     config = load_config(args.config)
     data = load_csvs(args.data_dir)
 
+    # Signal generation is identical for every exit mode. Generate it once,
+    # then reuse the prepared OHLCV/indicator data and signals for each exit
+    # simulation. This avoids repeating the expensive VCP scan six times.
+    bt = PortfolioBacktester(config, starting_capital=args.capital)
+    bt._prepared = {}
+    print("Generating VCP signals once for all exit modes...")
+    signals = bt._generate_signals(data, show_progress=True)
+
     rows = []
     for mode in MODES:
-        bt = PortfolioBacktester(config, starting_capital=args.capital)
         result = bt.run(
             data,
             start=args.start,
             end=args.end,
             show_progress=False,
             exit_mode=mode,
+            precomputed_signals=signals,
         )
         metrics = bt.metrics(result, starting_capital=args.capital)
         rows.append({"exit_mode": mode, **metrics})
