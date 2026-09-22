@@ -80,6 +80,9 @@ def main() -> None:
     print(f"Mean R:               {trades['r_multiple'].mean():.2f}")
     print(f"Median holding days:  {trades['holding_days'].median():.0f}")
     print(f"Mean holding days:    {trades['holding_days'].mean():.1f}")
+    print(f"Trades > 250 days:    {(trades['holding_days'] > 250).sum()}")
+    print(f"Trades > 500 days:    {(trades['holding_days'] > 500).sum()}")
+    print(f"Trades > 1000 days:   {(trades['holding_days'] > 1000).sum()}")
     print(
         f"Best trade:           {trades.loc[trades['return_pct'].idxmax(), 'symbol']} "
         f"{trades['return_pct'].max():.2%}"
@@ -138,12 +141,12 @@ def main() -> None:
     )
 
     print("\nTRADE RETURN QUANTILES")
-    print(
-        trades["return_pct"]
-        .quantile([0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0])
-        .rename("return_pct")
-        .to_string(formatters={"return_pct": "{:.2%}".format})
+    quantiles = trades["return_pct"].quantile(
+        [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
     )
+    print("\n".join(
+        f"{q:>4.0%}: {value:.2%}" for q, value in quantiles.items()
+    ))
 
     if "equity" in equity.columns:
         equity["Date"] = pd.to_datetime(equity.iloc[:, 0])
