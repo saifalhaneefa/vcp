@@ -41,6 +41,34 @@ class VCPDetector:
         start = max(0, i - self.cfg.vcp.max_contraction_lookback_days)
         return df.iloc[start:i]
 
+    def _breakout_context(self, df, i, contractions):
+        """Return (pivot, final_low_age, post_contraction_runup).
+
+        The pivot is the highest high in the recent resistance window before
+        the breakout, starting no earlier than the final contraction low.
+        This keeps an old contraction from supplying a stale pivot.
+        """
+        setup = self._setup(df, i)
+        final = contractions[-1]
+
+        final_low_age = len(setup) - 1 - final.low_idx
+
+        pivot_start = max(
+            final.low_idx,
+            len(setup) - self.cfg.vcp.pivot_lookback_days,
+        )
+        if pivot_start >= len(setup):
+            return np.nan, final_low_age, np.nan
+
+        pivot = float(setup.iloc[pivot_start:].High.max())
+        previous_close = float(df.iloc[i - 1].Close)
+        post_runup = (
+            previous_close / final.low - 1.0
+            if final.low > 0
+            else np.nan
+        )
+        return pivot, final_low_age, post_runup
+
     def find_signal(self, df, i):
         if i <= 0 or i >= len(df) - 1 or not self.trend_ok(df.iloc[i]):
             return None
@@ -50,29 +78,37 @@ class VCPDetector:
         if not self.valid(cs):
             return None
 
-        # In a VCP, the pivot is tied to the top of the final contraction,
-        # rather than a rolling high that moves upward with the breakout.
-        pivot = float(cs[-1].high)
+        pivot, final_low_age, post_runup = self._breakout_context(df, i, cs)
+        if (
+            not np.isfinite(pivot)
+            or final_low_age > self.cfg.vcp.max_final_contraction_age_bars
+            or post_runup > self.cfg.vcp.max_post_contraction_runup
+        ):
+            return None
 
         row = df.iloc[i]
         ratio = float(row.Volume / row.VolumeMA) if row.VolumeMA > 0 else np.nan
 
         if not np.isfinite(ratio) or ratio < self.cfg.vcp.breakout_volume_multiple:
             return None
-        if row.Close <= pivot:
+
+        close = float(row.Close)
+        if close <= pivot:
             return None
 
-        # The actual breakout is the transition from at/below the fixed
-        # final-contraction pivot to above it.
         previous_close = float(df.iloc[i - 1].Close)
         if previous_close > pivot:
+            return None
+
+        breakout_extension = close / pivot - 1.0
+        if breakout_extension > self.cfg.vcp.max_breakout_extension:
             return None
 
         return VCPSignal(
             df.index[i],
             pivot,
             ratio,
-            float(row.Close) * (1 - self.cfg.risk.max_stop_loss_pct),
+            close * (1 - self.cfg.risk.max_stop_loss_pct),
             tuple(cs),
         )
 
@@ -123,10 +159,18 @@ class VCPDetector:
         d = [c.depth for c in cs]
         if (
             d[0] < self.cfg.vcp.min_first_contraction
-            or not self.cfg.vcp.min_final_contraction <= d[-1] <= self.cfg.vcp.max_final_contraction
+            or not self.cfg.vcp.min_final_contraction
+            <= d[-1]
+            <= self.cfg.vcp.max_final_contraction
         ):
             return False
-        if any(b > a * self.cfg.vcp.max_contraction_ratio for a, b in zip(d, d[1:])):
+        if any(
+            b > a * self.cfg.vcp.max_contraction_ratio
+            for a, b in zip(d, d[1:])
+        ):
             return False
         v = [c.avg_volume for c in cs]
-        return not any(b > a * self.cfg.vcp.max_volume_step for a, b in zip(v, v[1:]))
+        return not any(
+            b > a * self.cfg.vcp.max_volume_step
+            for a, b in zip(v, v[1:])
+        )
