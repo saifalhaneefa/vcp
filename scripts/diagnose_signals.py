@@ -1,11 +1,10 @@
-"""Diagnose VCP candidates and show exactly where signals are rejected."""
+"""Diagnose VCP candidates after the sequential swing-structure rebuild."""
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,10 +24,14 @@ def load_data(path: Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"{path.name}: missing columns: {sorted(missing)}")
     df["Date"] = pd.to_datetime(df["Date"])
-    return df.sort_values("Date").drop_duplicates("Date").set_index("Date")
+    return (
+        df.sort_values("Date")
+        .drop_duplicates("Date")
+        .set_index("Date")
+    )
 
 
-def diagnose(symbol, raw, detector, start, end):
+def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector):
     df = add_indicators(raw, detector.cfg.trend)
     df["VolumeMA"] = df["Volume"].rolling(
         detector.cfg.vcp.volume_ma_days,
@@ -38,8 +41,7 @@ def diagnose(symbol, raw, detector, start, end):
     counts = {
         "trend_ok": 0,
         "valid_vcp_pattern": 0,
-        "fresh_contraction": 0,
-        "runup_ok": 0,
+        "fresh_setup": 0,
         "volume_pass": 0,
         "pivot_pass": 0,
         "transition_pass": 0,
@@ -47,53 +49,41 @@ def diagnose(symbol, raw, detector, start, end):
         "complete_signals": 0,
     }
     details = []
-    candidate_debug = []
 
     for i in range(1, len(df) - 1):
-        row = df.iloc[i]
-
-        if not detector.trend_ok(row):
+        if not detector.trend_ok(df.iloc[i]):
             continue
         counts["trend_ok"] += 1
 
-        start_idx = max(0, i - detector.cfg.vcp.max_contraction_lookback_days)
-        setup = df.iloc[start_idx:i]
-        cs = detector.find_contractions(setup)
-        if not detector.valid(cs):
+        setup_result = detector.find_setup(df, i)
+        if setup_result is None:
             continue
+
+        contractions, pivot, final_age, pivot_distance = setup_result
         counts["valid_vcp_pattern"] += 1
+        if final_age <= detector.cfg.vcp.max_final_contraction_age_bars:
+            counts["fresh_setup"] += 1
 
-        pivot, final_age, runup = detector._breakout_context(df, i, cs)
-        fresh_ok = (
-            np.isfinite(final_age)
-            and final_age <= detector.cfg.vcp.max_final_contraction_age_bars
-        )
-        runup_ok = (
-            np.isfinite(runup)
-            and runup <= detector.cfg.vcp.max_post_contraction_runup
-        )
-        if fresh_ok:
-            counts["fresh_contraction"] += 1
-        if runup_ok:
-            counts["runup_ok"] += 1
-
+        row = df.iloc[i]
+        close = float(row.Close)
         ratio = (
             float(row.Volume / row.VolumeMA)
             if row.VolumeMA > 0
             else float("nan")
         )
-        close = float(row.Close)
         previous_close = float(df.iloc[i - 1].Close)
 
         volume_ok = (
-            np.isfinite(ratio)
+            pd.notna(ratio)
             and ratio >= detector.cfg.vcp.breakout_volume_multiple
         )
-        pivot_ok = np.isfinite(pivot) and close > pivot
-        transition_ok = np.isfinite(pivot) and previous_close <= pivot
+        pivot_ok = close > pivot
+        lookback = detector.cfg.vcp.breakout_transition_lookback_days
+        prior = df.iloc[max(0, i - lookback):i]["Close"]
+        transition_ok = prior.empty or float(prior.max()) <= pivot
         extension_ok = (
-            pivot_ok
-            and close / pivot - 1.0 <= detector.cfg.vcp.max_breakout_extension
+            close / pivot - 1.0
+            <= detector.cfg.vcp.max_breakout_extension
         )
 
         if volume_ok:
@@ -105,56 +95,15 @@ def diagnose(symbol, raw, detector, start, end):
         if extension_ok:
             counts["extension_ok"] += 1
 
-        final = cs[-1]
-        candidate_debug.append(
-            {
-                "date": pd.Timestamp(df.index[i]).date().isoformat(),
-                "final_high_date": pd.Timestamp(
-                    setup.index[final.high_idx]
-                ).date().isoformat(),
-                "final_low_date": pd.Timestamp(
-                    setup.index[final.low_idx]
-                ).date().isoformat(),
-                "final_high": final.high,
-                "final_low": final.low,
-                "final_depth_pct": final.depth,
-                "final_age_bars": final_age,
-                "post_contraction_runup_pct": runup,
-                "pivot": pivot,
-                "close": close,
-                "close_minus_pivot_pct": (
-                    close / pivot - 1
-                    if np.isfinite(pivot)
-                    else np.nan
-                ),
-                "previous_close": previous_close,
-                "volume_ratio": ratio,
-                "volume_ok": volume_ok,
-                "pivot_ok": pivot_ok,
-                "transition_ok": transition_ok,
-                "extension_ok": extension_ok,
-                "fresh_ok": fresh_ok,
-                "runup_ok": runup_ok,
-                "complete": (
-                    fresh_ok
-                    and runup_ok
-                    and volume_ok
-                    and pivot_ok
-                    and transition_ok
-                    and extension_ok
-                ),
-            }
-        )
-
-        if (
-            fresh_ok
-            and runup_ok
-            and volume_ok
+        complete = (
+            volume_ok
             and pivot_ok
             and transition_ok
             and extension_ok
-        ):
+        )
+        if complete:
             counts["complete_signals"] += 1
+            signal = detector.find_signal(df, i)
             next_date = pd.Timestamp(df.index[i + 1])
             raw_open = float(df.iloc[i + 1].Open)
             entry = raw_open * (
@@ -171,33 +120,95 @@ def diagnose(symbol, raw, detector, start, end):
                     "entry_date": next_date.date().isoformat(),
                     "signal_close": close,
                     "pivot": pivot,
-                    "close_minus_pivot_pct": close / pivot - 1,
-                    "final_contraction_age_bars": final_age,
-                    "post_contraction_runup": runup,
+                    "breakout_pct": close / pivot - 1.0,
+                    "final_age_bars": final_age,
+                    "pivot_distance_from_final_low": pivot_distance,
                     "breakout_volume_ratio": ratio,
                     "entry_open": raw_open,
                     "simulated_entry": entry,
                     "stop": stop,
                     "planned_loss_pct": 1 - stop / entry,
-                    "entry_status": (
-                        "eligible"
-                        if start <= next_date <= end
-                        else "outside_backtest"
-                    ),
                 }
             )
 
-    summary = {"symbol": symbol, "rows": len(df), **counts}
-    return summary, details, pd.DataFrame(candidate_debug)
+    return {"symbol": symbol, "rows": len(df), **counts}, pd.DataFrame(details)
+
+
+def debug_symbol(symbol: str, raw: pd.DataFrame, detector: VCPDetector):
+    df = add_indicators(raw, detector.cfg.trend)
+    df["VolumeMA"] = df["Volume"].rolling(
+        detector.cfg.vcp.volume_ma_days,
+        min_periods=detector.cfg.vcp.volume_ma_days,
+    ).mean()
+
+    rows = []
+    for i in range(1, len(df) - 1):
+        if not detector.trend_ok(df.iloc[i]):
+            continue
+
+        setup_result = detector.find_setup(df, i)
+        if setup_result is None:
+            continue
+
+        contractions, pivot, final_age, pivot_distance = setup_result
+        row = df.iloc[i]
+        ratio = (
+            float(row.Volume / row.VolumeMA)
+            if row.VolumeMA > 0
+            else float("nan")
+        )
+
+        print("\n" + "=" * 90)
+        print(f"VCP CANDIDATE: {symbol} | {df.index[i].date()}")
+        print("=" * 90)
+        print(f"Close: {float(row.Close):.2f}")
+        print(f"Pivot: {pivot:.2f}")
+        print(f"Previous close: {float(df.iloc[i - 1].Close):.2f}")
+        print(f"Volume ratio: {ratio:.2f}x")
+        print(f"Final contraction age: {final_age} bars")
+        print(f"Pivot distance from final low: {pivot_distance:.2%}")
+        print("Contractions:")
+
+        setup = df.iloc[max(0, i - detector.cfg.vcp.max_contraction_lookback_days):i]
+        for n, c in enumerate(contractions, 1):
+            print(
+                f"  C{n}: "
+                f"{setup.index[c.high_idx].date()} {c.high:.2f} -> "
+                f"{setup.index[c.low_idx].date()} {c.low:.2f} "
+                f"depth={c.depth:.2%}; "
+                f"recovery={setup.index[c.recovery_high_idx].date()} "
+                f"{c.recovery_high:.2f}"
+            )
+
+        recent = df.iloc[max(0, i - 10):i + 1][
+            ["Open", "High", "Low", "Close", "Volume"]
+        ]
+        print("\nRecent bars:")
+        print(recent.to_string())
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "candidate_date": pd.Timestamp(df.index[i]).date().isoformat(),
+                "pivot": pivot,
+                "final_age_bars": final_age,
+                "pivot_distance_from_final_low": pivot_distance,
+                "breakout_volume_ratio": ratio,
+                "contractions": " | ".join(
+                    f"C{n}:{setup.index[c.high_idx].date()}->{setup.index[c.low_idx].date()} "
+                    f"{c.high:.2f}->{c.low:.2f} ({c.depth:.2%}) "
+                    f"recovery={c.recovery_high:.2f}"
+                    for n, c in enumerate(contractions, 1)
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=PROJECT_ROOT / "data",
-    )
+    parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     parser.add_argument(
         "--config",
         type=Path,
@@ -220,28 +231,36 @@ def main():
         else sorted(args.data_dir.glob("*.csv"))
     )
 
-    summaries, details, debug_frames = [], [], []
+    summaries = []
+    all_details = []
+    all_debug = []
 
     for path in paths:
         if path.name == "download_failures.txt" or not path.exists():
             continue
 
-        summary, rows, debug = diagnose(
-            path.stem,
-            load_data(path),
-            detector,
-            start,
-            end,
-        )
+        raw = load_data(path)
+        summary, detail = diagnose(path.stem, raw, detector)
         summaries.append(summary)
-        details.extend(rows)
 
-        if args.debug and not debug.empty:
-            debug.insert(0, "symbol", path.stem)
-            debug_frames.append(debug)
+        if not detail.empty:
+            detail = detail[
+                (pd.to_datetime(detail["entry_date"]) >= start)
+                & (pd.to_datetime(detail["entry_date"]) <= end)
+            ]
+            all_details.append(detail)
+
+        if args.debug:
+            debug = debug_symbol(path.stem, raw, detector)
+            if not debug.empty:
+                all_debug.append(debug)
 
     summary_report = pd.DataFrame(summaries)
-    detail_report = pd.DataFrame(details)
+    detail_report = (
+        pd.concat(all_details, ignore_index=True)
+        if all_details
+        else pd.DataFrame()
+    )
 
     if summary_report.empty:
         raise SystemExit("No usable CSV files found.")
@@ -255,16 +274,15 @@ def main():
 
     out = PROJECT_ROOT / "reports"
     out.mkdir(exist_ok=True)
+
     summary_report.to_csv(out / "signal_diagnostics.csv", index=False)
     detail_report.to_csv(out / "signal_candidates.csv", index=False)
 
     print(f"\nSaved: {out / 'signal_diagnostics.csv'}")
     print(f"Saved: {out / 'signal_candidates.csv'}")
 
-    if args.debug and debug_frames:
-        debug_report = pd.concat(debug_frames, ignore_index=True)
-        print("\nVALID VCP CANDIDATE DETAILS")
-        print(debug_report.to_string(index=False))
+    if all_debug:
+        debug_report = pd.concat(all_debug, ignore_index=True)
         debug_report.to_csv(out / "vcp_candidate_debug.csv", index=False)
         print(f"Saved: {out / 'vcp_candidate_debug.csv'}")
 
