@@ -100,9 +100,18 @@ def analyze(symbol: str, raw: pd.DataFrame, detector: VCPDetector,
             continue
         counts["pivot_break_days"] += 1
 
-        lookback = detector.cfg.vcp.breakout_transition_lookback_days
-        prior = df.iloc[max(0, i - lookback):i]["Close"]
-        transition_ok = prior.empty or float(prior.max()) <= float(pivot)
+        # Lifecycle rule: only the first close above the selected pivot after
+        # the final recovery high is eligible as a breakout candidate.
+        final = seq[-1]
+        if final.recovery_high_idx is None:
+            continue
+        pivot_abs_idx = setup.index[final.recovery_high_idx]
+        pivot_pos = df.index.get_loc(pivot_abs_idx)
+        prior_since_pivot = df.iloc[pivot_pos + 1:i]["Close"]
+        transition_ok = (
+            prior_since_pivot.empty
+            or float(prior_since_pivot.max()) <= float(pivot)
+        )
         if not transition_ok:
             continue
         counts["transition_days"] += 1
