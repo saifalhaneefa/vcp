@@ -16,7 +16,15 @@ Example:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Allow the script to be run directly from the repository root without
+# requiring an editable package install.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 import pandas as pd
 
@@ -46,8 +54,12 @@ def load_csvs(data_dir: Path, start: str, end: str) -> dict[str, pd.DataFrame]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
-    parser.add_argument("--config", type=Path, default=Path("configs/baseline.yaml"))
+    parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=PROJECT_ROOT / "configs" / "baseline.yaml",
+    )
     parser.add_argument("--start", default="2015-01-01")
     parser.add_argument("--end", default="2025-12-31")
     args = parser.parse_args()
@@ -81,7 +93,7 @@ def main() -> None:
     report = pd.DataFrame(results).sort_values("symbol")
     print(report.to_string(index=False))
 
-    output_dir = Path("reports")
+    output_dir = PROJECT_ROOT / "reports"
     output_dir.mkdir(exist_ok=True)
     report.to_csv(output_dir / "v1_symbol_results.csv", index=False)
     print(f"\nSaved: {output_dir / 'v1_symbol_results.csv'}")
