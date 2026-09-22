@@ -80,8 +80,6 @@ def save_symbol(df: pd.DataFrame, yahoo_symbol: str, out_dir: Path) -> bool:
 
     clean = df.copy()
     if isinstance(clean.columns, pd.MultiIndex):
-        # Single-ticker download can still return a MultiIndex depending on
-        # the installed yfinance version.
         clean.columns = clean.columns.get_level_values(0)
 
     required = ["Open", "High", "Low", "Close", "Volume"]
@@ -132,7 +130,9 @@ def download(
                 group_by="ticker",
                 progress=True,
                 timeout=30,
-                repair=True,
+                # Do not use repair=True here. yfinance's repair feature
+                # optionally imports SciPy; it is not required for our
+                # standard daily OHLCV research dataset.
             )
         except Exception as exc:
             print(f"Chunk download failed: {exc}")
