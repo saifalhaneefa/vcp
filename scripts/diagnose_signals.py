@@ -1,4 +1,4 @@
-"""Diagnose where VCP candidates are being rejected.
+"""Diagnose VCP candidates and portfolio-entry behavior.
 
 Usage:
     python scripts/diagnose_signals.py
@@ -32,7 +32,8 @@ def load_data(path: Path) -> pd.DataFrame:
     return df.sort_values("Date").drop_duplicates("Date").set_index("Date")
 
 
-def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector) -> dict:
+def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector,
+             start: pd.Timestamp, end: pd.Timestamp) -> tuple[dict, list[dict]]:
     df = add_indicators(raw, detector.cfg.trend)
     df["VolumeMA"] = df["Volume"].rolling(
         detector.cfg.vcp.volume_ma_days,
@@ -41,16 +42,17 @@ def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector) -> dict:
 
     trend_ok = 0
     valid_pattern = 0
-    volume_breakout = 0
+    breakout_confirmed = 0
     complete_signals = 0
+    details: list[dict] = []
 
     for i in range(1, len(df) - 1):
         if not detector.trend_ok(df.iloc[i]):
             continue
         trend_ok += 1
 
-        start = max(0, i - detector.cfg.vcp.max_contraction_lookback_days)
-        setup = df.iloc[start:i]
+        start_idx = max(0, i - detector.cfg.vcp.max_contraction_lookback_days)
+        setup = df.iloc[start_idx:i]
         contractions = detector.find_contractions(setup)
         if not detector.valid(contractions):
             continue
@@ -58,7 +60,7 @@ def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector) -> dict:
 
         pivot = float(
             df.iloc[
-                max(start, i - detector.cfg.vcp.pivot_lookback_days) : i
+                max(start_idx, i - detector.cfg.vcp.pivot_lookback_days) : i
             ].High.max()
         )
         row = df.iloc[i]
@@ -68,30 +70,74 @@ def diagnose(symbol: str, raw: pd.DataFrame, detector: VCPDetector) -> dict:
             continue
         if row.Close <= pivot:
             continue
-        volume_breakout += 1
+        breakout_confirmed += 1
 
-        if detector.find_signal(df, i) is not None:
-            complete_signals += 1
+        signal = detector.find_signal(df, i)
+        if signal is None:
+            continue
 
-    return {
+        complete_signals += 1
+        signal_date = pd.Timestamp(df.index[i])
+        next_date = pd.Timestamp(df.index[i + 1])
+        raw_open = float(df.iloc[i + 1].Open)
+        entry = raw_open * (
+            1.0 + detector.cfg.costs.slippage_bps / 10000.0
+        )
+        max_loss_stop = entry * (1.0 - detector.cfg.risk.max_stop_loss_pct)
+        pattern_stop = float(signal.stop_reference)
+        stop = max(pattern_stop, max_loss_stop)
+        per_share_risk = entry - stop
+
+        entry_status = "eligible"
+        if next_date < start or next_date > end:
+            entry_status = "outside_backtest"
+        elif per_share_risk <= 0:
+            entry_status = "skipped_gap_through_stop"
+
+        details.append(
+            {
+                "symbol": symbol,
+                "signal_date": signal_date.date().isoformat(),
+                "entry_date": next_date.date().isoformat(),
+                "signal_close": float(row.Close),
+                "pivot": pivot,
+                "breakout_volume_ratio": ratio,
+                "entry_open": raw_open,
+                "simulated_entry": entry,
+                "stop": stop,
+                "planned_loss_pct": 1.0 - stop / entry,
+                "per_share_risk": per_share_risk,
+                "entry_status": entry_status,
+            }
+        )
+
+    summary = {
         "symbol": symbol,
         "rows": len(df),
         "trend_ok": trend_ok,
         "valid_vcp_pattern": valid_pattern,
-        "breakout_confirmed": volume_breakout,
+        "breakout_confirmed": breakout_confirmed,
         "complete_signals": complete_signals,
     }
+    return summary, details
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
-    parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "baseline.yaml")
+    parser.add_argument(
+        "--config", type=Path,
+        default=PROJECT_ROOT / "configs" / "baseline.yaml"
+    )
     parser.add_argument("--symbol", default=None)
+    parser.add_argument("--start", default="2015-01-01")
+    parser.add_argument("--end", default="2025-12-31")
     args = parser.parse_args()
 
     config = load_config(args.config)
     detector = VCPDetector(config)
+    start = pd.Timestamp(args.start)
+    end = pd.Timestamp(args.end)
 
     paths = (
         [args.data_dir / f"{args.symbol}.csv"]
@@ -99,23 +145,38 @@ def main() -> None:
         else sorted(args.data_dir.glob("*.csv"))
     )
 
-    results = []
+    summaries = []
+    details = []
+
     for path in paths:
         if path.name == "download_failures.txt" or not path.exists():
             continue
-        symbol = path.stem
-        results.append(diagnose(symbol, load_data(path), detector))
+        summary, rows = diagnose(
+            path.stem, load_data(path), detector, start, end
+        )
+        summaries.append(summary)
+        details.extend(rows)
 
-    report = pd.DataFrame(results)
-    if report.empty:
+    summary_report = pd.DataFrame(summaries)
+    detail_report = pd.DataFrame(details)
+
+    if summary_report.empty:
         raise SystemExit("No usable CSV files found.")
 
-    print(report.to_string(index=False))
+    print("SIGNAL SUMMARY")
+    print(summary_report.to_string(index=False))
+
+    if not detail_report.empty:
+        print("\nCOMPLETE SIGNALS")
+        print(detail_report.to_string(index=False))
 
     out = PROJECT_ROOT / "reports"
     out.mkdir(exist_ok=True)
-    report.to_csv(out / "signal_diagnostics.csv", index=False)
+    summary_report.to_csv(out / "signal_diagnostics.csv", index=False)
+    detail_report.to_csv(out / "signal_candidates.csv", index=False)
+
     print(f"\nSaved: {out / 'signal_diagnostics.csv'}")
+    print(f"Saved: {out / 'signal_candidates.csv'}")
 
 
 if __name__ == "__main__":
