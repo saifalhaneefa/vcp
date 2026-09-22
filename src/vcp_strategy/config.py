@@ -20,6 +20,9 @@ class PatternConfig:
     max_contraction_ratio:float=0.85
     min_contraction_separation:int=3
     max_contraction_lookback_days:int=100
+    max_final_contraction_age_bars:int=20
+    max_post_contraction_runup:float=0.25
+    max_breakout_extension:float=0.10
     pivot_lookback_days:int=10
     volume_ma_days:int=50
     max_volume_step:float=1.10
