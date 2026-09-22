@@ -1,0 +1,28 @@
+trend:
+  sma_fast: 50
+  sma_mid: 150
+  sma_slow: 200
+  low_52w_days: 252
+  max_distance_from_52w_high: 0.15
+
+vcp:
+  min_contractions: 3
+  max_contractions: 5
+  min_first_contraction: 0.05
+  min_final_contraction: 0.01
+  max_final_contraction: 0.10
+  max_contraction_ratio: 0.85
+  min_contraction_separation: 3
+  max_contraction_lookback_days: 100
+  pivot_lookback_days: 10
+  volume_ma_days: 50
+  max_volume_step: 1.10
+  breakout_volume_multiple: 1.50
+
+risk:
+  max_stop_loss_pct: 0.08
+  portfolio_risk_per_trade: 0.01
+
+costs:
+  commission_bps: 5
+  slippage_bps: 10
