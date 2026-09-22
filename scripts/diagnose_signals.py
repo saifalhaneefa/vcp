@@ -73,9 +73,8 @@ def diagnose(
         if row.Close <= pivot:
             continue
 
-        previous_pivot = detector._pivot_before(df, i - 1)
         previous_close = float(df.iloc[i - 1].Close)
-        if np.isfinite(previous_pivot) and previous_close >= previous_pivot:
+        if np.isfinite(pivot) and previous_close >= pivot:
             continue
 
         breakout_confirmed += 1
@@ -136,7 +135,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "baseline.yaml",
+        default=PROJECT_ROOT / "configs" / "baseline.yaml"
     )
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--start", default="2015-01-01")
