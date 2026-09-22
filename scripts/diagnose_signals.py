@@ -40,7 +40,6 @@ def diagnose(
     detector: VCPDetector,
     start: pd.Timestamp,
     end: pd.Timestamp,
-    keep_candidates: int = 25,
 ) -> tuple[dict, list[dict]]:
     df = add_indicators(raw, detector.cfg.trend)
     df["VolumeMA"] = df["Volume"].rolling(
@@ -70,14 +69,17 @@ def diagnose(
             continue
         valid_pattern += 1
 
-        pivot = detector._pivot_before(df, i)
+        pivot = float(contractions[-1].high)
         ratio = float(row.Volume / row.VolumeMA) if row.VolumeMA > 0 else float("nan")
         close = float(row.Close)
         previous_close = float(df.iloc[i - 1].Close)
 
-        volume_ok = bool(np.isfinite(ratio) and ratio >= detector.cfg.vcp.breakout_volume_multiple)
+        volume_ok = bool(
+            np.isfinite(ratio)
+            and ratio >= detector.cfg.vcp.breakout_volume_multiple
+        )
         pivot_ok = bool(np.isfinite(pivot) and close > pivot)
-        transition_ok = bool(pivot_ok and previous_close < pivot)
+        transition_ok = bool(np.isfinite(pivot) and previous_close <= pivot)
 
         if volume_ok:
             volume_pass += 1
@@ -88,16 +90,15 @@ def diagnose(
 
         if volume_ok and pivot_ok and transition_ok:
             complete_signals += 1
+            signal = detector.find_signal(df, i)
             next_date = pd.Timestamp(df.index[i + 1])
             raw_open = float(df.iloc[i + 1].Open)
-            entry = raw_open * (1 + detector.cfg.costs.slippage_bps / 10000.0)
+            entry = raw_open * (
+                1 + detector.cfg.costs.slippage_bps / 10000.0
+            )
             max_loss_stop = entry * (1 - detector.cfg.risk.max_stop_loss_pct)
-            pattern_stop = close * (1 - detector.cfg.risk.max_stop_loss_pct)
+            pattern_stop = float(signal.stop_reference)
             stop = max(pattern_stop, max_loss_stop)
-
-            entry_status = "eligible"
-            if next_date < start or next_date > end:
-                entry_status = "outside_backtest"
 
             details.append(
                 {
@@ -113,7 +114,11 @@ def diagnose(
                     "simulated_entry": entry,
                     "stop": stop,
                     "planned_loss_pct": 1 - stop / entry,
-                    "entry_status": entry_status,
+                    "entry_status": (
+                        "eligible"
+                        if start <= next_date <= end
+                        else "outside_backtest"
+                    ),
                 }
             )
 
@@ -154,14 +159,14 @@ def build_rejection_report(
         if not detector.valid(contractions):
             continue
 
-        pivot = detector._pivot_before(df, i)
+        pivot = float(contractions[-1].high)
         ratio = float(row.Volume / row.VolumeMA) if row.VolumeMA > 0 else float("nan")
         close = float(row.Close)
         previous_close = float(df.iloc[i - 1].Close)
 
         volume_ok = np.isfinite(ratio) and ratio >= detector.cfg.vcp.breakout_volume_multiple
         pivot_ok = np.isfinite(pivot) and close > pivot
-        transition_ok = np.isfinite(pivot) and previous_close < pivot
+        transition_ok = np.isfinite(pivot) and previous_close <= pivot
 
         failed: list[str] = []
         if not volume_ok:
@@ -177,7 +182,9 @@ def build_rejection_report(
                 "date": pd.Timestamp(df.index[i]).date().isoformat(),
                 "close": close,
                 "pivot": pivot,
-                "close_minus_pivot_pct": (close / pivot - 1) if np.isfinite(pivot) else np.nan,
+                "close_minus_pivot_pct": (
+                    (close / pivot - 1) if np.isfinite(pivot) else np.nan
+                ),
                 "previous_close": previous_close,
                 "breakout_volume_ratio": ratio,
                 "failed_stage": ",".join(failed) if failed else "PASS",
@@ -221,9 +228,7 @@ def main() -> None:
             continue
 
         raw = load_data(path)
-        summary, details = diagnose(
-            path.stem, raw, detector, start, end
-        )
+        summary, details = diagnose(path.stem, raw, detector, start, end)
         summaries.append(summary)
         complete_details.extend(details)
 
