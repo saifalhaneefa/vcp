@@ -344,9 +344,10 @@ class PortfolioBacktester:
             # schedule them for the next available trading session. This avoids
             # using today's closing price to trigger and fill the same trade.
             if exit_mode != "stop_only":
-                next_date = self._next_available_date(all_dates, date)
-                if next_date is not None:
-                    for symbol, position in list(positions.items()):
+                for symbol, position in list(positions.items()):
+                    next_date = self._next_symbol_date(symbol, date)
+                    if next_date is None or next_date not in all_dates:
+                        continue
                         row = self._row_on_date(symbol, date)
                         if row is None:
                             continue
@@ -369,8 +370,8 @@ class PortfolioBacktester:
                             exit_mode == "max252"
                             and held_bars >= 252
                         )
-                        if ma20_exit or ma50_exit or max126_exit or max252_exit:
-                            pending_exits.setdefault(next_date, set()).add(symbol)
+                    if ma20_exit or ma50_exit or max126_exit or max252_exit:
+                        pending_exits.setdefault(next_date, set()).add(symbol)
 
             # 6. Mark portfolio at today's close.
             equity_values.append(self._mark_equity(cash, positions, date))
