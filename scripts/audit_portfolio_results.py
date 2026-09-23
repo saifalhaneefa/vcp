@@ -57,6 +57,9 @@ def main() -> None:
 
     trades["entry_year"] = trades["entry_date"].dt.year
 
+    out = PROJECT_ROOT / "reports"
+    out.mkdir(exist_ok=True)
+
     # Normalize the equity curve once so the calendar-year portfolio
     # performance section and the final equity check use the same data.
     if "equity" in equity.columns:
@@ -231,8 +234,6 @@ def main() -> None:
         )
         print(f"Days with drawdown below -20%: {(dd < -0.20).sum()}")
 
-    out = PROJECT_ROOT / "reports"
-    out.mkdir(exist_ok=True)
     trades.sort_values("pnl", ascending=False).to_csv(
         out / "portfolio_trades_audited.csv", index=False
     )
