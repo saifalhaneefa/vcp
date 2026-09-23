@@ -57,6 +57,12 @@ def main() -> None:
 
     trades["entry_year"] = trades["entry_date"].dt.year
 
+    # Normalize the equity curve once so the calendar-year portfolio
+    # performance section and the final equity check use the same data.
+    if "equity" in equity.columns:
+        equity["Date"] = pd.to_datetime(equity.iloc[:, 0])
+        equity = equity.sort_values("Date").reset_index(drop=True)
+
     print("=" * 100)
     print("VCP PORTFOLIO TRADE AUDIT")
     print("=" * 100)
@@ -115,6 +121,69 @@ def main() -> None:
         "win_rate": "{:.2%}".format,
     }))
 
+    if "equity" in equity.columns:
+        print("\nCALENDAR-YEAR PORTFOLIO PERFORMANCE")
+        calendar_rows = []
+        previous_year_end = None
+
+        for year, year_data in equity.groupby(equity["Date"].dt.year, sort=True):
+            year_data = year_data.sort_values("Date").reset_index(drop=True)
+            first_equity = float(year_data["equity"].iloc[0])
+            end_equity = float(year_data["equity"].iloc[-1])
+            start_equity = (
+                first_equity if previous_year_end is None else previous_year_end
+            )
+
+            # Drawdown for the calendar year is measured from the prior
+            # year-end equity (or the first available equity point for the
+            # first year), so the table describes the portfolio path during
+            # that year rather than trade-entry cohorts.
+            dd_series = pd.concat(
+                [
+                    pd.Series([start_equity], dtype=float),
+                    year_data["equity"].astype(float),
+                ],
+                ignore_index=True,
+            )
+            peak_series = dd_series.cummax()
+            year_dd = dd_series / peak_series - 1.0
+            dd_idx = int(year_dd.idxmin())
+            if dd_idx == 0:
+                dd_date = year_data["Date"].iloc[0].date()
+            else:
+                dd_date = year_data["Date"].iloc[dd_idx - 1].date()
+
+            calendar_rows.append(
+                {
+                    "year": int(year),
+                    "start_equity": start_equity,
+                    "end_equity": end_equity,
+                    "total_pnl": end_equity - start_equity,
+                    "annual_return": end_equity / start_equity - 1.0,
+                    "max_drawdown": float(year_dd.min()),
+                    "drawdown_date": dd_date,
+                }
+            )
+            previous_year_end = end_equity
+
+        calendar_year = pd.DataFrame(calendar_rows).set_index("year")
+        print(
+            calendar_year.to_string(
+                formatters={
+                    "start_equity": "₹{:,.0f}".format,
+                    "end_equity": "₹{:,.0f}".format,
+                    "total_pnl": "₹{:,.0f}".format,
+                    "annual_return": "{:.2%}".format,
+                    "max_drawdown": "{:.2%}".format,
+                }
+            )
+        )
+
+        calendar_year.to_csv(out / "portfolio_calendar_year_results.csv")
+        print(
+            f"Saved: {out / 'portfolio_calendar_year_results.csv'}"
+        )
+
     print("\nTOP 10 WINNERS")
     top = trades.nlargest(10, "pnl")[
         [
@@ -149,7 +218,6 @@ def main() -> None:
     ))
 
     if "equity" in equity.columns:
-        equity["Date"] = pd.to_datetime(equity.iloc[:, 0])
         eq_col = "equity"
         eq = equity[eq_col].astype(float)
         peak = eq.cummax()
